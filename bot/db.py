@@ -33,6 +33,11 @@ CREATE TABLE IF NOT EXISTS articles (
 );
 CREATE INDEX IF NOT EXISTS idx_status ON articles(status);
 CREATE INDEX IF NOT EXISTS idx_published ON articles(published_at);
+
+CREATE TABLE IF NOT EXISTS state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -162,3 +167,16 @@ class Database:
         )
         rows = await cur.fetchall()
         return {row["status"]: row["c"] for row in rows}
+
+    async def get_state(self, key: str) -> str | None:
+        cur = await self._conn.execute("SELECT value FROM state WHERE key=?", (key,))
+        row = await cur.fetchone()
+        return row["value"] if row else None
+
+    async def set_state(self, key: str, value: str) -> None:
+        await self._conn.execute(
+            "INSERT INTO state(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        await self._conn.commit()

@@ -18,7 +18,7 @@ import asyncio
 import logging
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, ".")
@@ -35,23 +35,27 @@ from main import IPv4AiohttpSession
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-# Запуски GitHub Actions иногда опаздывают на несколько минут, поэтому
-# публикуем, если с запланированного времени прошло не больше 15 минут.
-POST_TOLERANCE_MIN = 15
+STATE_SLOT = "next_post_slot"
 
 
 def git(*args: str) -> None:
     subprocess.run(["git", *args], check=False, capture_output=True)
 
 
-def should_post(now: datetime) -> bool:
-    minutes = now.hour * 60 + now.minute
+def slot_to_dt(date: str, hhmm: str) -> datetime:
+    hour, minute = (int(x) for x in hhmm.split(":"))
+    dt = datetime.fromisoformat(f"{date} {hour:02d}:{minute:02d}")
+    return dt.replace(tzinfo=ZoneInfo(settings.timezone))
+
+
+def next_slot_after(now: datetime) -> datetime:
+    """Ближайший пост-тайм строго после now (на сегодня или завтра)."""
     for t in settings.post_times:
-        hour, minute = (int(x) for x in t.split(":"))
-        delta = minutes - (hour * 60 + minute)
-        if 0 <= delta <= POST_TOLERANCE_MIN:
-            return True
-    return False
+        candidate = slot_to_dt(now.date().isoformat(), t)
+        if candidate > now:
+            return candidate
+    first = slot_to_dt(now.date().isoformat(), settings.post_times[0])
+    return first + timedelta(days=1)
 
 
 async def main() -> None:
@@ -67,7 +71,17 @@ async def main() -> None:
         await session.close()
 
     now = datetime.now(ZoneInfo(settings.timezone))
-    if should_post(now):
+    raw = await db.get_state(STATE_SLOT)
+    if raw:
+        slot = datetime.fromisoformat(raw)
+        if slot.tzinfo is None:
+            slot = slot.replace(tzinfo=ZoneInfo(settings.timezone))
+    else:
+        slot = next_slot_after(now)
+        await db.set_state(STATE_SLOT, slot.isoformat())
+        print(f"Инициализирован слот публикации: {slot:%d.%m %H:%M}")
+
+    if now >= slot:
         bot = Bot(
             settings.bot_token,
             session=IPv4AiohttpSession(),
@@ -77,8 +91,11 @@ async def main() -> None:
             await publish_one(db, bot)
         finally:
             await bot.session.close()
+        slot = next_slot_after(now)
+        await db.set_state(STATE_SLOT, slot.isoformat())
+        print(f"Следующий слот: {slot:%d.%m %H:%M}")
     else:
-        print(f"Публикация не запланирована ({now:%H:%M} {settings.timezone})")
+        print(f"Публикация не запланирована (следующий слот {slot:%d.%m %H:%M})")
 
     # Сохраняем состояние базы в репозиторий
     await db._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
