@@ -1,8 +1,8 @@
 """Оформление и отправка постов в Telegram-канал.
 
 Формат поста:
-- краткий заголовок (виден сразу);
-- подробная выжимка, скрытая спойлером <tg-spoiler> — раскрывается по тапу;
+- краткий заголовок;
+- подробная выжимка (видна сразу, обрезается по границе абзаца);
 - источник, время и ссылка на статью.
 """
 
@@ -34,13 +34,43 @@ _TITLE_LIMIT = 110
 _SUMMARY_LIMIT_TEXT = 800
 _SUMMARY_LIMIT_CAPTION = 480
 
+_PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
+
+
+def _paragraphs(text: str) -> list[str]:
+    return [p.strip() for p in _PARAGRAPH_BREAK.split(text or "") if p.strip()]
+
 
 def _truncate(text: str, limit: int) -> str:
-    text = _WS.sub(" ", text or "").strip()
+    """Обрезает текст до limit символов, не разрывая абзацы.
+
+    Возвращает полные абзацы (сколько влезло) и многоточие; если не влезает
+    даже первый абзац — режет внутри него по границе слов.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
     if len(text) <= limit:
-        return text
-    cut = text[: limit - 1].rsplit(" ", 1)[0]
-    return cut + "…"
+        return _WS.sub(" ", text)
+
+    kept: list[str] = []
+    total = 0
+    for para in _paragraphs(text):
+        para = _WS.sub(" ", para)
+        if total + len(para) <= limit:
+            kept.append(para)
+            total += len(para) + 2
+        else:
+            break
+
+    result = "\n\n".join(kept)
+    if kept and len(result) + 3 <= limit:
+        return result + "\n\n…"
+
+    first = _WS.sub(" ", _paragraphs(text)[0])
+    if len(first) <= limit:
+        return first + "…"
+    return first[: limit - 1].rsplit(" ", 1)[0] + "…"
 
 
 def format_message(item: dict, caption: bool = False) -> str:
@@ -55,7 +85,7 @@ def format_message(item: dict, caption: bool = False) -> str:
 
     lines = [f"<b>{title}</b>"]
     if summary:
-        lines.append(f"<tg-spoiler>{summary}</tg-spoiler>")
+        lines.append(summary)
     lines.append(f"📰 <i>{source}</i> · 🕐 {time_str}")
     lines.append(f"🔗 {item['url']}")
 
@@ -66,7 +96,7 @@ def format_message(item: dict, caption: bool = False) -> str:
             summary = _truncate(summary, len(summary) - 80)
             lines = [
                 f"<b>{title}</b>",
-                f"<tg-spoiler>{html.escape(summary)}</tg-spoiler>",
+                html.escape(summary),
                 f"📰 <i>{source}</i> · 🕐 {time_str}",
                 f"🔗 {item['url']}",
             ]
